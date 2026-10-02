@@ -356,7 +356,7 @@
   ];
   const DEFAULT_SETTINGS = {
     apiKey: '',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     seconds: 60,
     maxWords: 15,
     clubName: 'AI Club',
@@ -375,6 +375,8 @@
   };
 
   let settings = { ...DEFAULT_SETTINGS, ...load(K.settings, {}) };
+  // Models Google has retired for new API users — move saved settings onto the current default.
+  if (['gemini-2.5-flash'].includes(settings.model)) settings.model = DEFAULT_SETTINGS.model;
   let leaderboard = load(K.lb, []);
   let customTargets = load(K.custom, []);
 

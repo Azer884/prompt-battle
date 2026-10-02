@@ -26,7 +26,7 @@ The API key is never in the code. It is only stored in the browser you type it i
 
 | Setting | Notes |
 | --- | --- |
-| Gemini model | Default `gemini-2.5-flash`. If Google renames or retires it, put the current free Flash model name here. |
+| Gemini model | Default `gemini-3.8-flash`. If Google renames or retires it, put the current free Flash model name here. |
 | Seconds / max words | Default 60 / 15. |
 | Sign-up link | Shown as a QR code on every results screen. |
 | Image URL template | Swap in another generator if Pollinations is slow. It uses the `{prompt}` and `{seed}` placeholders. |
