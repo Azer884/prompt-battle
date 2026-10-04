@@ -99,7 +99,7 @@
     position: relative; aspect-ratio: 1 / 1; width: 100%; border-radius: var(--radius); overflow: hidden;
     background: var(--panel-2); border: 1px solid var(--line); display: grid; place-items: center;
   }
-  .imgbox img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .imgbox img { width: 100%; height: 100%; object-fit: contain; display: block; } /* show the whole image, never crop */
   .imgbox .tag {
     position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,.65); padding: 4px 12px;
     border-radius: 999px; font-size: 14px; font-weight: 700; letter-spacing: .5px;
@@ -280,12 +280,21 @@
 
       <div class="grid2">
         <div>
-          <label for="setKey">Gemini API key (free from aistudio.google.com)</label>
+          <label for="setKey">Gemini API keys (free from aistudio.google.com; several = separate with commas)</label>
           <input type="password" id="setKey" autocomplete="off" placeholder="Paste your Gemini API key">
+          <div class="note" id="configKeysNote"></div>
         </div>
         <div>
           <label for="setModel">Gemini model</label>
           <input type="text" id="setModel">
+        </div>
+        <div>
+          <label for="setFallbacks">Backup Gemini models (comma-separated, used when the main one is overloaded)</label>
+          <input type="text" id="setFallbacks">
+        </div>
+        <div>
+          <label for="setImageKey">Pollinations key (optional, from enter.pollinations.ai — much better images)</label>
+          <input type="password" id="setImageKey" autocomplete="off" placeholder="sk_… — leave empty for the free low-quality model">
         </div>
         <div>
           <label for="setSeconds">Seconds per prompt</label>
@@ -305,7 +314,7 @@
         </div>
       </div>
 
-      <label for="setTemplate">Image generator URL template — <code>{prompt}</code> and <code>{seed}</code> are filled in</label>
+      <label for="setTemplate">Image generator URL template — <code>{prompt}</code>, <code>{seed}</code> and <code>{key}</code> are filled in. Change <code>model=</code> to try another Pollinations model.</label>
       <input type="text" id="setTemplate">
 
       <div class="row" style="margin-top:16px">
@@ -316,7 +325,8 @@
 
       <hr>
       <h3>Targets</h3>
-      <label for="setTargets">Secret target prompts — one per line. Targets are generated with the same generator players use, so they're always reachable. The prompt is revealed after the round.</label>
+      <p class="note" id="builtinTargetsNote"></p>
+      <label for="setTargets">Secret target prompts (optional) — one per line. Targets are generated with the same generator players use, so they're always reachable. The prompt is revealed after the round.</label>
       <textarea id="setTargets" rows="10" spellcheck="false"></textarea>
       <label for="uploadTargets">…or upload your own target images (used alongside the prompts above)</label>
       <input type="file" id="uploadTargets" accept="image/*" multiple>
@@ -329,10 +339,13 @@
   </section>
 </main>
 
+<script src="config.js"></script>
+<script src="builtin-targets.js"></script>
 <script>
 (() => {
   // ---------- Defaults & storage ----------
-  const DEFAULT_TARGETS = [
+  // The old built-in prompt list: saved settings still holding it switch to the built-in image targets.
+  const OLD_DEFAULT_TARGETS = [
     'a red fox sleeping in the snow under a full moon, watercolor',
     'an astronaut riding a bicycle on a beach at sunset',
     'a cat wearing sunglasses on a skateboard, cartoon style',
@@ -357,13 +370,21 @@
   const DEFAULT_SETTINGS = {
     apiKey: '',
     model: 'gemini-3.8-flash',
+    fallbackModels: 'gemini-flash-latest, gemini-flash-lite-latest',
+    imageKey: '',
     seconds: 60,
     maxWords: 15,
     clubName: 'AI Club',
     signupUrl: '',
-    template: 'https://image.pollinations.ai/prompt/{prompt}?width=768&height=768&nologo=true&seed={seed}',
-    targets: DEFAULT_TARGETS.join('\n'),
+    template: 'https://gen.pollinations.ai/image/{prompt}?model=zimage&width=768&height=768&seed={seed}&key={key}',
+    targets: '',
   };
+  // Shared keys and targets for every laptop: config.js (git-ignored) and builtin-targets.js.
+  const CONFIG = window.PB_CONFIG || {};
+  const BUILTIN_TARGETS = window.PB_BUILTIN_TARGETS || [];
+  const splitKeys = (s) => String(s || '').split(/[\s,]+/).filter(Boolean);
+  // Pollinations' keyless endpoint: still free, but only serves a weak model now.
+  const FREE_TEMPLATE = 'https://image.pollinations.ai/prompt/{prompt}?width=768&height=768&nologo=true&seed={seed}';
   const K = { settings: 'pb_settings', lb: 'pb_leaderboard', custom: 'pb_custom_targets' };
 
   const load = (key, fallback) => {
@@ -377,6 +398,12 @@
   let settings = { ...DEFAULT_SETTINGS, ...load(K.settings, {}) };
   // Models Google has retired for new API users — move saved settings onto the current default.
   if (['gemini-2.5-flash'].includes(settings.model)) settings.model = DEFAULT_SETTINGS.model;
+  if (settings.template === FREE_TEMPLATE) settings.template = DEFAULT_SETTINGS.template;
+  if (settings.targets === OLD_DEFAULT_TARGETS.join('\n')) settings.targets = '';
+  // Keys typed in Settings first, then the shared ones from config.js.
+  const geminiKeys = () => [...new Set([...splitKeys(settings.apiKey), ...(CONFIG.geminiKeys || []).map((k) => String(k).trim()).filter(Boolean)])];
+  const imageKey = () => settings.imageKey || CONFIG.pollinationsKey || '';
+  let keyIndex = 0; // which Gemini key is in use; moves on when one runs out
   let leaderboard = load(K.lb, []);
   let customTargets = load(K.custom, []);
 
@@ -403,9 +430,11 @@
   }
 
   function imageUrl(prompt, seed) {
-    return settings.template
+    const template = settings.template.includes('{key}') && !imageKey() ? FREE_TEMPLATE : settings.template;
+    return template
       .replace('{prompt}', encodeURIComponent(prompt))
-      .replace('{seed}', String(seed));
+      .replace('{seed}', String(seed))
+      .replace('{key}', encodeURIComponent(imageKey()));
   }
 
   function loadImage(src, timeoutMs = 120000) {
@@ -420,13 +449,13 @@
   }
 
   // Downscale to a JPEG data URL — small enough for the judge and for localStorage.
-  function toJpeg(img, max = 768) {
+  function toJpeg(img, max = 768, quality = 0.85) {
     const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
     const c = document.createElement('canvas');
     c.width = Math.round(img.naturalWidth * scale);
     c.height = Math.round(img.naturalHeight * scale);
     c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', 0.85);
+    return c.toDataURL('image/jpeg', quality);
   }
 
   async function generateImage(prompt, seed = randSeed()) {
@@ -454,7 +483,8 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
   const CRITERIA = [['subject', 'Subject', 40], ['composition', 'Composition', 20], ['colors', 'Colours', 20], ['style', 'Style', 20]];
 
   async function judge(targetDataUrl, attemptDataUrl) {
-    if (!settings.apiKey) throw new Error('No Gemini API key — add one in Settings');
+    const keys = geminiKeys();
+    if (!keys.length) throw new Error('No Gemini API key — add one in Settings or config.js');
     const part = (dataUrl) => ({ inline_data: { mime_type: 'image/jpeg', data: dataUrl.split(',')[1] } });
     const body = {
       contents: [{ parts: [
@@ -464,19 +494,33 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
       ] }],
       generationConfig: { temperature: 0, responseMimeType: 'application/json' },
     };
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent`;
+    // Main model first, then the backups: "high demand" (503) and rate limits (429) are usually per model.
+    const models = [settings.model, ...settings.fallbackModels.split(',').map((m) => m.trim())]
+      .filter((m, i, all) => m && all.indexOf(m) === i);
 
-    let res;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.apiKey },
-        body: JSON.stringify(body),
-      });
-      if (res.status !== 429 && res.status < 500) break;
-      await sleep(4000 * (attempt + 1)); // free-tier rate limit or overload: back off
+    let res, data;
+    // Each key has its own free-tier quota: when one is used up or rejected, move on to the next.
+    for (let k = 0; k < keys.length; k++) {
+      const key = keys[(keyIndex + k) % keys.length];
+      for (const model of models) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify(body),
+          });
+          if (res.status !== 429 && res.status < 500) break;
+          if (attempt === 0) await sleep(3000); // free-tier rate limit or overload: back off once
+        }
+        data = await res.json().catch(() => ({}));
+        if (res.ok) break;
+        if (res.status !== 404 && res.status !== 429 && res.status < 500) break; // bad key/request: backups won't help
+      }
+      if (res.ok) { keyIndex = (keyIndex + k) % keys.length; break; }
+      const keyProblem = [401, 403, 429].includes(res.status) || /api key/i.test(data.error?.message || '');
+      if (!keyProblem) break; // anything else fails the same way with every key
     }
-    const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error?.message || `Gemini error ${res.status}`);
 
     const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
@@ -526,7 +570,7 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
     $('clubLabel').textContent = settings.clubName ? '· ' + settings.clubName : '';
     $('ruleSeconds').textContent = settings.seconds + 's';
     $('ruleWords').textContent = settings.maxWords;
-    $('setupWarning').textContent = settings.apiKey ? '' : '⚠️ Add a Gemini API key in Settings before playing.';
+    $('setupWarning').textContent = geminiKeys().length ? '' : '⚠️ Add a Gemini API key in Settings before playing.';
     renderLeaderboard($('homeLeaderboard'), 10);
     showScreen('home');
   }
@@ -538,7 +582,7 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
   function pickTarget() {
     const pool = [
       ...settings.targets.split('\n').map((s) => s.trim()).filter(Boolean).map((p) => ({ kind: 'prompt', prompt: p, key: 'p:' + p })),
-      ...customTargets.map((t) => ({ kind: 'image', dataUrl: t.dataUrl, key: 'i:' + t.id })),
+      ...[...BUILTIN_TARGETS, ...customTargets].map((t) => ({ kind: 'image', dataUrl: t.dataUrl, key: 'i:' + t.id })),
     ];
     if (!pool.length) throw new Error('No targets — add some in Settings');
     const choices = pool.length > 1 ? pool.filter((t) => t.key !== lastTargetKey) : pool;
@@ -548,7 +592,7 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
   }
 
   function openSetup(mode, prevNames = []) {
-    if (!settings.apiKey) { openSettings(); $('testResult').textContent = 'Add your Gemini API key first.'; return; }
+    if (!geminiKeys().length) { openSettings(); $('testResult').textContent = 'Add your Gemini API key first.'; return; }
     game = { mode, players: [] };
     $('setupTitle').textContent = mode === 'solo' ? 'Who\'s playing?' : 'Who\'s battling?';
     const fields = $('nameFields');
@@ -813,12 +857,18 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
   function openSettings() {
     $('setKey').value = settings.apiKey;
     $('setModel').value = settings.model;
+    $('setFallbacks').value = settings.fallbackModels;
+    $('setImageKey').value = settings.imageKey;
     $('setSeconds').value = settings.seconds;
     $('setWords').value = settings.maxWords;
     $('setClub').value = settings.clubName;
     $('setSignup').value = settings.signupUrl;
     $('setTemplate').value = settings.template;
     $('setTargets').value = settings.targets;
+    const shared = (CONFIG.geminiKeys || []).filter(Boolean).length;
+    $('configKeysNote').textContent = shared ? `+ ${shared} shared key${shared > 1 ? 's' : ''} from config.js (used after yours)` : '';
+    $('builtinTargetsNote').textContent = BUILTIN_TARGETS.length ? `${BUILTIN_TARGETS.length} built-in target image${BUILTIN_TARGETS.length > 1 ? 's are' : ' is'} always in the pool (builtin-targets.js).` : '';
+    $('setImageKey').placeholder = CONFIG.pollinationsKey ? 'Using the shared key from config.js' : 'sk_… — leave empty for the free low-quality model';
     $('testResult').textContent = '';
     renderThumbs();
     showScreen('settings');
@@ -829,6 +879,8 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
       ...settings,
       apiKey: $('setKey').value.trim(),
       model: $('setModel').value.trim() || DEFAULT_SETTINGS.model,
+      fallbackModels: $('setFallbacks').value.trim(),
+      imageKey: $('setImageKey').value.trim(),
       seconds: Math.max(10, Math.min(300, Number($('setSeconds').value) || 60)),
       maxWords: Math.max(3, Math.min(100, Number($('setWords').value) || 15)),
       clubName: $('setClub').value.trim(),
@@ -882,7 +934,7 @@ The explanation is 2 short sentences addressed to the player ("you"): what match
       const url = URL.createObjectURL(file);
       try {
         const img = await loadImage(url);
-        customTargets.push({ id: Date.now() + '-' + Math.random(), dataUrl: toJpeg(img, 640) });
+        customTargets.push({ id: Date.now() + '-' + Math.random(), dataUrl: toJpeg(img, 1600, 0.92) }); // keep uploads sharp on big screens
       } catch { alert('Could not read ' + file.name); }
       URL.revokeObjectURL(url);
     }
